@@ -70,7 +70,8 @@ with st.form("add_slot"):
     coach = st.text_input("Coach Name")
     date = st.date_input("Date")
     time = st.text_input("Time (e.g. 10:00 AM)")
-    submit = st.form_submit_with_button("Add Slot")
+    submit = st.form_submit_button("Add Slot")
+
     
     if submit and coach and time:
         new_row = pd.DataFrame([{
