@@ -1,76 +1,111 @@
 import streamlit as st
 import pandas as pd
-from streamlit_gsheets import GSheetsConnection
+import requests
+import base64
+import json
 
-st.set_page_config(page_title="Swim Coach Scheduler", page_icon="🏊‍♀️")
+# --- GITHUB DATABASE SETTINGS ---
+# Streamlit will use these to read/write to your repo
+REPO = "Worldgate-swim-coach"
+FILE_PATH = "bookings.csv"
+
+# Get GitHub credentials from Streamlit Secrets
+try:
+    GITHUB_TOKEN = st.secrets["github"]["token"]
+    GITHUB_USER = st.secrets["github"]["username"]
+except Exception:
+    st.error("Missing GitHub credentials in Streamlit Secrets!")
+    st.stop()
+
+# Headers for GitHub API
+HEADERS = {
+    "Authorization": f"token {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github.v3+json"
+}
+URL = f"https://api.github.com/repos/{GITHUB_USER}/{REPO}/contents/{FILE_PATH}"
+
+# --- HELPER FUNCTIONS ---
+def load_data():
+    """Fetch bookings from GitHub CSV file"""
+    res = requests.get(URL, headers=HEADERS)
+    if res.status_code == 200:
+        file_data = res.json()
+        content = base64.b64decode(file_data["content"]).decode("utf-8")
+        # Convert CSV string to DataFrame
+        from io import StringIO
+        df = pd.read_csv(StringIO(content))
+        return df, file_data["sha"]
+    elif res.status_code == 404:
+        # File doesn't exist yet, return empty DataFrame
+        df = pd.DataFrame(columns=["Coach", "Date", "Time", "Status"])
+        return df, None
+    else:
+        st.error(f"Failed to load data: {res.status_code}")
+        return pd.DataFrame(columns=["Coach", "Date", "Time", "Status"]), None
+
+def save_data(df, sha=None):
+    """Save bookings DataFrame back to GitHub CSV file"""
+    csv_data = df.to_csv(index=False)
+    encoded_content = base64.b64encode(csv_data.encode("utf-8")).decode("utf-8")
+    
+    payload = {
+        "message": "Update bookings from App",
+        "content": encoded_content
+    }
+    if sha:
+        payload["sha"] = sha
+        
+    res = requests.put(URL, headers=HEADERS, json=payload)
+    return res.status_code in [200, 201]
+
+# --- APP UI ---
 st.title("🏊‍♀️ Swim Coach Scheduler")
 
-# Connect to your Google Sheet
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Load existing bookings
+df, sha = load_data()
 
-# Read the data from the sheet
-schedule_df = conn.read(worksheet="Sheet1", ttl=0)
-
-# Clean up any empty rows Google Sheets might add
-schedule_df = schedule_df.dropna(how="all")
-
-# Sidebar to switch views
-role = st.sidebar.radio("Select View:", ["Coach", "Student/Family"])
-
-# ---------------- COACH VIEW ----------------
-if role == "Coach":
-    st.header("Manage Availability")
+# Admin Area to Add Timeslots
+st.subheader("Add Available Timeslot")
+with st.form("add_slot"):
+    coach = st.text_input("Coach Name")
+    date = st.date_input("Date")
+    time = st.text_input("Time (e.g. 10:00 AM)")
+    submit = st.form_submit_with_button("Add Slot")
     
-    with st.form("add_slot"):
-        date = st.date_input("Date")
-        time = st.time_input("Time")
-        coach_name = st.text_input("Coach Name (e.g., Coach Sarah)")
-        submitted = st.form_submit_button("Add Timeslot")
-        
-        if submitted:
-            # Included the 'Coach' column in the saved data
-            new_data = pd.DataFrame([{"Date": str(date), "Time": str(time), "Coach": coach_name, "Status": "Available"}])
-            updated_df = pd.concat([schedule_df, new_data], ignore_index=True)
-            
-            # Save it back to Google Sheets
-            conn.update(worksheet="Sheet1", data=updated_df)
-            st.success(f"Added timeslot for {date} at {time} with {coach_name}!")
+    if submit and coach and time:
+        new_row = pd.DataFrame([{
+            "Coach": coach,
+            "Date": str(date),
+            "Time": time,
+            "Status": "Available"
+        }])
+        df = pd.concat([df, new_row], ignore_index=True)
+        if save_data(df, sha):
+            st.success("Slot added successfully!")
             st.rerun()
-            
-    st.divider()
-    st.subheader("Current Schedule Overview")
-    st.dataframe(schedule_df, use_container_width=True)
-
-# ---------------- USER VIEW ----------------
-elif role == "Student/Family":
-    st.header("Book a Lesson")
-    
-    if schedule_df.empty:
-        st.info("No slots available yet.")
-    else:
-        # Filter to only show 'Available' slots
-        available_slots = schedule_df[schedule_df["Status"] == "Available"]
-        
-        if available_slots.empty:
-            st.info("No available slots right now. Check back soon!")
         else:
-            # Display slots with a booking button
-            for index, row in available_slots.iterrows():
-                col1, col2, col3, col4 = st.columns([1.5, 1.5, 2, 1])
-                col1.write(f"📅 **{row['Date']}**")
-                col2.write(f"⏰ **{row['Time']}**")
-                col3.write(f"🏊 **{row['Coach']}**")
-                
-                # When the user clicks book
-                if col4.button("Book", key=f"book_{index}"):
-                    schedule_df.at[index, "Status"] = "Booked"
-                    
-                    # Update the Google Sheet with the new 'Booked' status
-                    conn.update(worksheet="Sheet1", data=schedule_df)
-                    st.success("Lesson Booked successfully!")
-                    st.rerun()
-                    
-    st.divider()
-    st.subheader("Currently Booked Lessons")
-    booked = schedule_df[schedule_df["Status"] == "Booked"]
-    st.dataframe(booked, use_container_width=True)
+            st.error("Failed to save to GitHub.")
+
+# Client Area to Book
+st.subheader("Available Slots")
+available_slots = df[df["Status"] == "Available"]
+
+if available_slots.empty:
+    st.info("No lessons currently available.")
+else:
+    for idx, row in available_slots.iterrows():
+        col1, col2 = st.columns([3, 1])
+        col1.write(f"**{row['Coach']}** - {row['Date']} at {row['Time']}")
+        if col2.button("Book Now", key=f"book_{idx}"):
+            df.at[idx, "Status"] = "Booked"
+            if save_data(df, sha):
+                st.balloons()
+                st.success("Successfully Booked!")
+                st.rerun()
+            else:
+                st.error("Booking failed to save.")
+
+# Show current schedule (Admin view)
+st.divider()
+if st.checkbox("Show Entire Schedule"):
+    st.dataframe(df)
