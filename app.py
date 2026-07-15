@@ -4,7 +4,6 @@ import requests
 import base64
 
 # --- GITHUB DATABASE SETTINGS ---
-# Lowercase "w" to match your exact GitHub repository name!
 REPO = "worldgate-swim-coach"
 FILE_PATH = "bookings.csv"
 
@@ -27,17 +26,28 @@ URL = f"https://api.github.com/repos/{GITHUB_USER}/{REPO}/contents/{FILE_PATH}"
 def load_data():
     """Fetch bookings from GitHub CSV file"""
     res = requests.get(URL, headers=HEADERS)
+    
+    # Define our standard columns
+    columns = ["Coach", "Date", "Time", "Status", "Client Name", "Client Phone"]
+    
     if res.status_code == 200:
         file_data = res.json()
         content = base64.b64decode(file_data["content"]).decode("utf-8")
         from io import StringIO
         df = pd.read_csv(StringIO(content))
+        
+        # Smart Upgrade: Ensure all necessary columns exist even in older files
+        for col in columns:
+            if col not in df.columns:
+                df[col] = ""
         return df, file_data["sha"]
+        
     elif res.status_code == 404:
-        return pd.DataFrame(columns=["Coach", "Date", "Time", "Status"]), None
+        # File doesn't exist yet, return fresh DataFrame with all columns
+        return pd.DataFrame(columns=columns), None
     else:
         st.error(f"GitHub Error (Load): {res.status_code} - {res.text}")
-        return pd.DataFrame(columns=["Coach", "Date", "Time", "Status"]), None
+        return pd.DataFrame(columns=columns), None
 
 def save_data(df, sha=None):
     """Save bookings DataFrame back to GitHub CSV file"""
@@ -63,20 +73,32 @@ st.title("🏊‍♀️ Swim Coach Scheduler")
 # Load existing bookings
 df, sha = load_data()
 
-# Admin Area to Add Timeslots
+# --- ADMIN AREA: ADD TIMESLOTS ---
 st.subheader("Add Available Timeslot")
+
+# Standard list of swimming lesson timeslots
+time_options = [
+    "7:00 AM", "7:30 AM", "8:00 AM", "8:30 AM", "9:00 AM", "9:30 AM", 
+    "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM", "12:00 PM", "12:30 PM", 
+    "1:00 PM", "1:30 PM", "2:00 PM", "2:30 PM", "3:00 PM", "3:30 PM", 
+    "4:00 PM", "4:30 PM", "5:00 PM", "5:30 PM", "6:00 PM", "6:30 PM", 
+    "7:00 PM", "7:30 PM"
+]
+
 with st.form("add_slot"):
     coach = st.text_input("Coach Name")
     date = st.date_input("Date")
-    time = st.text_input("Time (e.g. 10:00 AM)")
+    time = st.selectbox("Time Slot", options=time_options)
     submit = st.form_submit_button("Add Slot")
     
-    if submit and coach and time:
+    if submit and coach:
         new_row = pd.DataFrame([{
             "Coach": coach,
             "Date": str(date),
             "Time": time,
-            "Status": "Available"
+            "Status": "Available",
+            "Client Name": "",
+            "Client Phone": ""
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         success, error_msg = save_data(df, sha)
@@ -86,7 +108,7 @@ with st.form("add_slot"):
         else:
             st.error(f"Failed to save to GitHub. Reason: {error_msg}")
 
-# Client Area to Book
+# --- CLIENT AREA: VIEW & BOOK SLOTS ---
 st.subheader("Available Slots")
 available_slots = df[df["Status"] == "Available"]
 
@@ -94,20 +116,34 @@ if available_slots.empty:
     st.info("No lessons currently available.")
 else:
     for idx, row in available_slots.iterrows():
-        col1, col2 = st.columns([3, 1])
-        col1.write(f"**{row['Coach']}** - {row['Date']} at {row['Time']}")
-        if col2.button("Book Now", key=f"book_{idx}"):
-            df.at[idx, "Status"] = "Booked"
-            success, error_msg = save_data(df, sha)
-            if success:
-                st.balloons()
-                st.success("Successfully Booked!")
-                st.rerun()
-            else:
-                st.error(f"Booking failed. Reason: {error_msg}")
+        # Display each available session with a drop-down form to gather details
+        with st.expander(f"🟢 {row['Coach']} — {row['Date']} at {row['Time']}"):
+            with st.form(key=f"book_form_{idx}"):
+                client_name = st.text_input("Your Name", key=f"name_{idx}")
+                client_phone = st.text_input("Your Phone Number", key=f"phone_{idx}")
+                book_submit = st.form_submit_button("Confirm Booking")
+                
+                if book_submit:
+                    if not client_name or not client_phone:
+                        st.error("Please enter both your name and phone number to book.")
+                    else:
+                        df.at[idx, "Status"] = "Booked"
+                        df.at[idx, "Client Name"] = client_name
+                        df.at[idx, "Client Phone"] = client_phone
+                        
+                        success, error_msg = save_data(df, sha)
+                        if success:
+                            st.balloons()
+                            st.success("Successfully Booked!")
+                            st.rerun()
+                        else:
+                            st.error(f"Booking failed. Reason: {error_msg}")
 
-# Show current schedule (Admin view)
+# --- ADMIN AREA: VIEW SCHEDULE ---
 st.divider()
-if st.checkbox("Show Entire Schedule"):
-    st.dataframe(df)
+if st.checkbox("Show Schedule & Bookings (Admin View)"):
+    st.write("### Complete Schedule Ledger")
+    # Show clean version of the DataFrame, highlighting booked clients
+    st.dataframe(df[["Coach", "Date", "Time", "Status", "Client Name", "Client Phone"]])
+
 
