@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import requests
 import base64
-import json
 
 # --- GITHUB DATABASE SETTINGS ---
-# Streamlit will use these to read/write to your repo
-REPO = "Worldgate-swim-coach"
+# Lowercase "w" to match your exact GitHub repository name!
+REPO = "worldgate-swim-coach"
 FILE_PATH = "bookings.csv"
 
 # Get GitHub credentials from Streamlit Secrets
@@ -31,16 +30,13 @@ def load_data():
     if res.status_code == 200:
         file_data = res.json()
         content = base64.b64decode(file_data["content"]).decode("utf-8")
-        # Convert CSV string to DataFrame
         from io import StringIO
         df = pd.read_csv(StringIO(content))
         return df, file_data["sha"]
     elif res.status_code == 404:
-        # File doesn't exist yet, return empty DataFrame
-        df = pd.DataFrame(columns=["Coach", "Date", "Time", "Status"])
-        return df, None
+        return pd.DataFrame(columns=["Coach", "Date", "Time", "Status"]), None
     else:
-        st.error(f"Failed to load data: {res.status_code}")
+        st.error(f"GitHub Error (Load): {res.status_code} - {res.text}")
         return pd.DataFrame(columns=["Coach", "Date", "Time", "Status"]), None
 
 def save_data(df, sha=None):
@@ -56,7 +52,10 @@ def save_data(df, sha=None):
         payload["sha"] = sha
         
     res = requests.put(URL, headers=HEADERS, json=payload)
-    return res.status_code in [200, 201]
+    if res.status_code in [200, 201]:
+        return True, ""
+    else:
+        return False, f"Code {res.status_code}: {res.text}"
 
 # --- APP UI ---
 st.title("🏊‍♀️ Swim Coach Scheduler")
@@ -71,7 +70,6 @@ with st.form("add_slot"):
     date = st.date_input("Date")
     time = st.text_input("Time (e.g. 10:00 AM)")
     submit = st.form_submit_button("Add Slot")
-
     
     if submit and coach and time:
         new_row = pd.DataFrame([{
@@ -81,11 +79,12 @@ with st.form("add_slot"):
             "Status": "Available"
         }])
         df = pd.concat([df, new_row], ignore_index=True)
-        if save_data(df, sha):
+        success, error_msg = save_data(df, sha)
+        if success:
             st.success("Slot added successfully!")
             st.rerun()
         else:
-            st.error("Failed to save to GitHub.")
+            st.error(f"Failed to save to GitHub. Reason: {error_msg}")
 
 # Client Area to Book
 st.subheader("Available Slots")
@@ -99,14 +98,16 @@ else:
         col1.write(f"**{row['Coach']}** - {row['Date']} at {row['Time']}")
         if col2.button("Book Now", key=f"book_{idx}"):
             df.at[idx, "Status"] = "Booked"
-            if save_data(df, sha):
+            success, error_msg = save_data(df, sha)
+            if success:
                 st.balloons()
                 st.success("Successfully Booked!")
                 st.rerun()
             else:
-                st.error("Booking failed to save.")
+                st.error(f"Booking failed. Reason: {error_msg}")
 
 # Show current schedule (Admin view)
 st.divider()
 if st.checkbox("Show Entire Schedule"):
     st.dataframe(df)
+
