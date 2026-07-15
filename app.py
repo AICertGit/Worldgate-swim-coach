@@ -1,7 +1,8 @@
-import streamlit as st
+ import streamlit as st
 import pandas as pd
 import requests
 import base64
+from io import StringIO
 
 # --- GITHUB DATABASE SETTINGS ---
 REPO = "worldgate-swim-coach"
@@ -27,14 +28,16 @@ def load_data():
     """Fetch bookings from GitHub CSV file"""
     res = requests.get(URL, headers=HEADERS)
     
-    # Define our standard columns
-    columns = ["Coach", "Date", "Time", "Status", "Client Name", "Client Phone"]
+    # Define our standard columns (Email added!)
+    columns = ["Coach", "Date", "Time", "Status", "Client Name", "Client Phone", "Client Email"]
     
     if res.status_code == 200:
         file_data = res.json()
         content = base64.b64decode(file_data["content"]).decode("utf-8")
-        from io import StringIO
-        df = pd.read_csv(StringIO(content))
+        
+        # Read as string to prevent Pandas TypeError, then fill blank spaces
+        df = pd.read_csv(StringIO(content), dtype=str)
+        df = df.fillna("")
         
         # Smart Upgrade: Ensure all necessary columns exist even in older files
         for col in columns:
@@ -43,7 +46,6 @@ def load_data():
         return df, file_data["sha"]
         
     elif res.status_code == 404:
-        # File doesn't exist yet, return fresh DataFrame with all columns
         return pd.DataFrame(columns=columns), None
     else:
         st.error(f"GitHub Error (Load): {res.status_code} - {res.text}")
@@ -76,7 +78,6 @@ df, sha = load_data()
 # --- ADMIN AREA: ADD TIMESLOTS ---
 st.subheader("Add Available Timeslot")
 
-# Standard list of swimming lesson timeslots
 time_options = [
     "7:00 AM", "7:30 AM", "8:00 AM", "8:30 AM", "9:00 AM", "9:30 AM", 
     "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM", "12:00 PM", "12:30 PM", 
@@ -98,7 +99,8 @@ with st.form("add_slot"):
             "Time": time,
             "Status": "Available",
             "Client Name": "",
-            "Client Phone": ""
+            "Client Phone": "",
+            "Client Email": ""
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         success, error_msg = save_data(df, sha)
@@ -116,20 +118,22 @@ if available_slots.empty:
     st.info("No lessons currently available.")
 else:
     for idx, row in available_slots.iterrows():
-        # Display each available session with a drop-down form to gather details
         with st.expander(f"🟢 {row['Coach']} — {row['Date']} at {row['Time']}"):
             with st.form(key=f"book_form_{idx}"):
                 client_name = st.text_input("Your Name", key=f"name_{idx}")
                 client_phone = st.text_input("Your Phone Number", key=f"phone_{idx}")
+                client_email = st.text_input("Your Email Address", key=f"email_{idx}")
                 book_submit = st.form_submit_button("Confirm Booking")
                 
                 if book_submit:
-                    if not client_name or not client_phone:
-                        st.error("Please enter both your name and phone number to book.")
+                    # Require all three fields to be filled out
+                    if not client_name or not client_phone or not client_email:
+                        st.error("Please fill out your name, phone, and email to book.")
                     else:
                         df.at[idx, "Status"] = "Booked"
                         df.at[idx, "Client Name"] = client_name
                         df.at[idx, "Client Phone"] = client_phone
+                        df.at[idx, "Client Email"] = client_email
                         
                         success, error_msg = save_data(df, sha)
                         if success:
@@ -143,7 +147,5 @@ else:
 st.divider()
 if st.checkbox("Show Schedule & Bookings (Admin View)"):
     st.write("### Complete Schedule Ledger")
-    # Show clean version of the DataFrame, highlighting booked clients
-    st.dataframe(df[["Coach", "Date", "Time", "Status", "Client Name", "Client Phone"]])
-
+    st.dataframe(df[["Coach", "Date", "Time", "Status", "Client Name", "Client Phone", "Client Email"]])
 
