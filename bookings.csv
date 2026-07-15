@@ -1,3 +1,4 @@
 Coach,Date,Time,Status,Client Name,Client Phone
 Testing,2026-07-15,9pm,Booked,,
-Testing2,2026-07-16,11pm,Booked,Testing,57199999999
+Testing2,2026-07-16,11pm,Booked,Testing,57199999999.0
+Test3,2026-07-17,7:00 AM,Available,,
